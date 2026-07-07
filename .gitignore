@@ -1,0 +1,29 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments / uv ---
+.venv/
+venv/
+env/
+
+# --- ADK runtime artifacts ---
+*.db
+*.sqlite
+*.sqlite3
+mcp_chat_session_db
+mcp_chat_session.db
+
+# --- Secrets and local config ---
+.env
+.env.*
+*.pem
+*credentials*.json
+
+# --- vs code ---
+.vscode/
