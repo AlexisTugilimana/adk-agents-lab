@@ -38,6 +38,20 @@ Auditing persistent sessions
 which apps/users/sessions exist, how many event each hold, per-session timeline, 
 and the shared user:/app: state.
 
+Context compaction (long-term context)
+--------------------------------------
+ADK can summarize old turns into a single compact summary event in the background. 
+This file exposes that as a tunable policy:
+
+    off         (default) never compact; behaviour identical to before.
+    interval    compact after every N user invocations.
+    token       compact when the last prompt crosses a token threshold.
+    hybrid      whichever of interval/token fires first.
+
+    --compaction interval --compaction-interval 3 --overlap-size 1
+    --compaction token --token-threshold 12000 --event-retention-size 6
+    --compaction hybrid --summarizer-model gemini 2.5-flash-lite.
+    
 MCP
 ---
 Servers are described declaratively in the SERVERS registry. Earch server pairs 
@@ -156,6 +170,14 @@ UNKNOWN_RESPONSE_NAME = "<unknown>"
 ARTIFACT_DIR = "mcp-artifacts"
 
 DEFAULT_DB_URL = "sqlite+aiosqlite:///mcp_chat_session_db"
+
+# --- Compaction defaults ---
+# Fallbacks when no CLI flags.
+DEFAULT_COMPACTION_TRIGGER = "off"          # off | interval | token | hybrid
+DEFAULT_COMPACTION_INTERVAL = 3             # Compact every N user invocations
+DEFAULT_COMPACTION_OVERLAP = 1              # Invocation kept for context overlap
+DEFAULT_COMPACTION_TOKEN_THRESHOLD = 8000   # Prompt-token trigger (token/hybrid)
+DEFAULT_COMPACTION_EVENT_RETENTION = 6      # Raw events kept after a token compaction
 
 CONFIRMATION_FUNCTION_NAME = "adk_request_confirmation"
 CONFIRMATION_HINT = "This tool requires your approval before it runs."
@@ -1164,6 +1186,39 @@ async def delete_session_command( config: SessionConfig ) -> None:
     print( f"Deleted session {config.session_id!r}." )
     
 # ==============================================================================
+# Context compaction
+# ==============================================================================
+# `CompactionSettings` is framework agnostic and decribe the intent of compaction 
+# (as for session_service).
+class CompactionTrigger( str, Enum ):
+    """When the Runner should compact history.
+    
+        off         -> never (no compaction).
+        interval    -> after every `compaction_interval` user invocations.
+        token       -> when the last prompt's token count crosses `token_threshold`.
+        hybrid      -> whichever of the two fires first.
+    """
+    
+    OFF = "off"
+    INTERVAL = "interval"
+    TOKEN = "token"
+    HYBRID = "hybrid"
+    
+@dataclass
+class CompactionSettings:
+    """Framework-agnostic description of the compaction policy."""
+    
+    trigger: CompactionTrigger = CompactionTrigger.OFF
+    compaction_interval: int = DEFAULT_COMPACTION_INTERVAL
+    overlap_size: int = DEFAULT_COMPACTION_OVERLAP
+    token_threshold: int = DEFAULT_COMPACTION_TOKEN_THRESHOLD
+    event_retention_size: int = DEFAULT_COMPACTION_EVENT_RETENTION
+    summarizer_model: str | None = None
+    summarize_prompt: str | None = None
+    
+    
+    
+# ==============================================================================
 # Agent + Resumable app
 # ==============================================================================
 def build_agent( toolsets: list[ McpToolset ], before_tool_callback: BeforeToolCallback | None = None ) -> Agent:
@@ -1240,6 +1295,11 @@ async def chat( config: SessionConfig ) -> None:
         
         await chat_loop( runner, user_id = user_id, session_id = session_id, approver = terminal_approver )
 
+# ==============================================================================
+# Compaction settings from CLI flags
+# ==============================================================================
+def resolve_compaction_settings( args: argparse.Namespace ) -> CompactionSettings:
+    
 # ==============================================================================
 # Preflight (environment + credentials)
 # ==============================================================================
@@ -1385,6 +1445,53 @@ def main() -> None:
         action = "store_true",
         help = "Print a read-only audit of the sqlite session database, then exit."
     )
+    
+    # --- Compation flags ---
+    compaction_group = parser.add_argument_group( "context compaction" )
+    compaction_group.add_argument(
+        "--compaction", 
+        choices = [ t.value for t in CompactionTrigger ],
+        default = DEFAULT_COMPACTION_TRIGGER,
+        help = (
+            "When to compact history: off (default), interval (every N turns), "
+            "'token' (on prompt-token threshold), or 'hybrid' (whichever first)."
+        )
+    )
+    compaction_group.add_argument(
+        "--compaction-interval",
+        type = int,
+        default = DEFAULT_COMPACTION_INTERVAL,
+        help = f"Compact after every N user invocations. Default:{DEFAULT_COMPACTION_INTERVAL}"
+    )
+    compaction_group.add_argument(
+        "--overlap-size",
+        type = int,
+        default = DEFAULT_COMPACTION_OVERLAP,
+        help = f"Invocation kept for context overlap between summaries. Default:{DEFAULT_COMPACTION_OVERLAP}"
+    )
+    compaction_group.add_argument(
+        "--token-threshold",
+        type = int,
+        default = DEFAULT_COMPACTION_TOKEN_THRESHOLD,
+        help = f"Prompt-token count that triggers token/hybrid compaction. Default:{DEFAULT_COMPACTION_TOKEN_THRESHOLD}"
+    )
+    compaction_group.add_argument(
+        "--event-retention-size",
+        type = int, 
+        default = DEFAULT_COMPACTION_EVENT_RETENTION,
+        help = f"Raw event kept un-compacted after a token compaction. Default:{DEFAULT_COMPACTION_EVENT_RETENTION}"
+    )
+    compaction_group.add_argument(
+        "--summarizer-model", 
+        default = None,
+        help = f"Dedicated model for summarization. Default: agent model."
+    )
+    compaction_group.add_argument(
+        "--summarizer-prompt", 
+        default = None,
+        help = f"Custom summarization prompt template (must contain 'conversation_history')."
+    )
+    
     args = parser.parse_args()
     
     configure_logging( args.debug, args.quiet )
