@@ -155,7 +155,10 @@ from google.adk.tools import BaseTool, ToolContext
 from google.adk.apps import App
 from mcp import StdioServerParameters
 from google.adk.events import Event
-from google.adk.apps.app import App, ResumabilityConfig
+from google.adk.apps.app import App, ResumabilityConfig, EventsCompactionConfig
+from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
+from google.adk.models import Gemini
 from google.genai import types
 
 # ==============================================================================
@@ -938,6 +941,28 @@ def summarize_content( content: dict | None ) -> tuple[ str, str ]:
         
     return ( "other", "" )
 
+def extract_compaction ( actions: dict | None ) -> dict | None:
+    """Return the compaction data to be displayed in the timeline."""
+    
+    if not isinstance( actions, dict ):
+        return None
+    compaction = actions.get( "compaction" )
+    if not isinstance( compaction, dict ):
+        return None
+    
+    start = compaction.get( "start_timestamp" ) or compaction.get( "startTimestamp" )
+    end = compaction.get( "end_timestamp" ) or compaction.get( "endTimeStamps" )
+    content = compaction.get( "compacted_content" ) or compaction.get( "compactedContent" )
+    
+    snippet = ""
+    if isinstance( content, dict ):
+        for part in content.get( "parts", [] ):
+            if isinstance( part, dict ) and part.get( "text" ):
+                snippet = " ".join( part[ "text" ].split() if isinstance( part[ "text"], str ) else "" )[ :160 ]
+                break
+    
+    return { "start": start, "end": end, "snippet": snippet }
+
 class SessionAuditor:
     """Read-only reporter over an ADK SQLite session database."""
     
@@ -984,14 +1009,15 @@ class SessionAuditor:
                 "timestamp": str( row[ "timestamp" ] ) if "timestamp" in keys else ""
             }
             
-            
             if "event_data" in keys:  # Current ADK: one JSON blob
                 data = _safe_json( row[ "event_data" ] ) or {}
                 record[ "author" ] = data.get( "author" )
                 record[ "content" ] = data.get( "content" )
+                record[ "actions" ] = data.get( "actions" ) if isinstance( data.get( "actions" ), dict ) else None
             else:                       # legacy ADK / notebook schema
                 record[ "author" ] = row[ "author" ] if "author" in keys else None
                 record[ "content" ] = _safe_json( row[ "content" ] ) if "content" in keys else None
+                record[ "actions" ] = _safe_json( row[ "actions" ] ) if "actions" in keys else None
             
             records.append( record )
         
@@ -1039,6 +1065,19 @@ class SessionAuditor:
         timeline: list[ dict ] = []
         
         for record in events:
+            compaction = extract_compaction( record.get( "actions" ) )
+            if compaction is not None:
+                snippet = compaction[ "snippet" ] or "(summary)"
+                timeline.append(
+                    {
+                        "timestamp": record[ "timestamp" ],
+                        "author": record[ "author" ] or "?",
+                        "kind": "compaction",
+                        "snippet": snippet
+                    }
+                )
+                continue
+            
             kind, snippet = summarize_content( record[ "content" ] )
             timeline.append(
                 {
@@ -1050,6 +1089,25 @@ class SessionAuditor:
             )
         
         return timeline
+    
+    def compactions( self, session_id: str ) -> list[ dict ]:
+        """Return every compaction summary for a recorded session."""
+        
+        with self._connect() as connection:
+            events = [ r for r in self._event_records( connection ) if r[ "session_id" ] == session_id ]
+        
+        found: list[ dict ] = []
+        for record in events:
+            compaction = extract_compaction( record.get( "actions" ) )
+            if compaction is not None:
+                found.append(
+                    {
+                        "timestamp": record[ "timestamp" ],
+                        "author": record[ "author" ],
+                        **compaction
+                    }
+                )
+        return found
     
     def shared_state( self ) -> tuple[ list[ dict ], list[ dict ] ]:
         """Return (app_states, user_states) rows."""
@@ -1125,6 +1183,18 @@ def print_audit_report( config: SessionConfig ) -> None:
     target = config.session_id
     known = { summary.session_id for summary in summaries }
     if target in known:
+        # Print summary of events first
+        compactions = auditor.compactions( target )
+        print( f"\nCompaction summaries for session {target!r}: {len(compactions)}" )
+        for entry in compactions:
+            span = f"{entry[ "start" ]} -> {entry[ "end" ]}" if entry.get( "start" ) else "range n/a"
+            print( f"   \u2713 [{entry[ "timestamp" ]} {entry[ "author" ]} covers {span}]" )
+            if entry.get( "snippet" ):
+                print( f"   summary: {entry[ "snippet" ]}" )
+        
+        if not compactions:
+            print( "    (not yet - run more turns than the compaction interval to trigger one)" )
+            
         print( f"\nTimeline for session {target!r}:" )
         for entry in auditor.timeline( target ):
             detail = f" - {entry["snippet"] if entry["snippet"] else ""}"
@@ -1216,8 +1286,86 @@ class CompactionSettings:
     summarizer_model: str | None = None
     summarize_prompt: str | None = None
     
+    @property
+    def enabled( self ) -> bool:
+        return self.trigger is not CompactionTrigger.OFF
     
+    @property
+    def uses_interval( self ) -> bool:
+        return self.trigger in ( CompactionTrigger.INTERVAL, CompactionTrigger.HYBRID )
     
+    @property
+    def uses_token( self ) -> bool:
+        return self.trigger in ( CompactionTrigger.TOKEN, CompactionTrigger.HYBRID )
+    
+    # Could be replaced by Pydantic
+    def __post_init__( self ) -> None:
+        if not self.enabled:
+            return
+        if self.uses_interval:
+            if self.compaction_interval < 1:
+                raise ValueError( "compaction_interval must be >= 1" )
+            if self.overlap_size < 0:
+                raise ValueError( "overlap_size must be >= 0" )
+            if self.overlap_size >= self.compaction_interval:
+                raise ValueError(
+                    "overval_size must be smaller than compaction_interval",
+                    f"(got overlap={self.overlap_size} interval={self.compaction_interval})"
+                )
+        if self.uses_token:
+            if self.token_threshold < 1:
+                raise ValueError( "token_threshold must be >= 1" )
+            if self.event_retention_size < 0:
+                raise ValueError( "event_retention_size must be >= 0" )
+            
+    def describe( self ) -> str:
+        """One-line summary for startup logging"""
+        
+        if not self.enabled:
+            return "compaction disabled"
+        who = self.summarizer_model or f"{MODEL} (default summarizer)"
+        parts: list[ str ] = []
+        if self.uses_interval:
+            parts.append( f"every {self.compaction_interval} turns (overlap {self.overlap_size})" )
+        if self.uses_token:
+            parts.append( f"or >= {self.token_threshold} prompt tokens (keep last {self.event_retention_size})" )
+        
+        return f"compaction {self.trigger.value} {" ".join( parts )} via {who}"
+    
+def build_summarizer( settings: CompactionSettings ) -> BaseEventsSummarizer | None:
+    """Build a custom summarize when asked by the user."""
+    
+    if settings.summarizer_model is None and settings.summarize_prompt is None:
+        return None
+    
+    model_name = settings.summarizer_model or MODEL
+    summarizer = LlmEventSummarizer(
+        llm = Gemini( model = model_name ),
+        prompt_template = settings.summarize_prompt
+    )
+    log.info( f"compaction.summarizer model={model_name} custom_prompt={settings.summarize_prompt is not None}" )
+    return summarizer
+
+def build_events_compaction_config( settings: CompactionSettings ) -> EventsCompactionConfig | None:
+    """Translate configuration settings into ADK's EventsCompactionConfig."""
+    
+    if not settings.enabled:
+        return None
+    
+    kwargs: dict = {
+        "compaction_interval": settings.compaction_interval if settings.uses_interval else 10**9,   # Is user 10**9 the best way
+        "overlap_size": settings.overlap_size,
+        "summarizer": build_summarizer( settings )
+    }
+    
+    if settings.uses_token:
+        kwargs[ "token_threshold" ] = settings.token_threshold
+        kwargs[ "event_retention_size" ] = settings.event_retention_size
+    
+    config = EventsCompactionConfig( **kwargs )
+    log.info( f"compaction.config {settings.describe()}" )
+    return config
+
 # ==============================================================================
 # Agent + Resumable app
 # ==============================================================================
@@ -1230,13 +1378,14 @@ def build_agent( toolsets: list[ McpToolset ], before_tool_callback: BeforeToolC
         before_tool_callback = before_tool_callback
     )
 
-def build_app( agent: Agent ) -> App:
+def build_app( agent: Agent, compaction: EventsCompactionConfig | None = None ) -> App:
     """Wrap the agent in resumable app."""
     
     return App(
         name = APP_NAME,
         root_agent = agent,
-        resumability_config = ResumabilityConfig( is_resumable = True )
+        resumability_config = ResumabilityConfig( is_resumable = True ),
+        events_compaction_config = compaction
     )
     
 # ==============================================================================
@@ -1253,7 +1402,7 @@ async def list_tools() -> None:
 # ==============================================================================
 # Cmd: chat (connect to MCP and drives the model)
 # ==============================================================================
-async def chat( config: SessionConfig ) -> None:
+async def chat( config: SessionConfig, compaction_settings: CompactionSettings ) -> None:
     """Run the interactive chat. Needs first to check credentials and MCP 
     runtimes.
     
@@ -1271,13 +1420,18 @@ async def chat( config: SessionConfig ) -> None:
         gated = gated_tool_names( specs, discovered )
         before_tool_callback: BeforeToolCallback = make_confirmation_callback( gated )
         
-        # Pick the session backend
+        # Translate session configuration into ADK config
         session_service, backend_label = build_session_service( config )
         print( f"[session] {backend_label}" )
         log.info( f"session.backend={config.backend.value} {backend_label}" )
         
+        # Compaction policy and translation to ADK config
+        compaction_config = build_events_compaction_config( compaction_settings )
+        print( f"[compaction] {compaction_settings.describe()}" )
+        
         agent = build_agent( toolsets, before_tool_callback )
-        app = build_app( agent )
+        app = build_app( agent, compaction_config )
+        
         runner = Runner( app = app, session_service = session_service )
         log.info( f"Startup app={APP_NAME} agent={agent.name} model={MODEL}" )
         
@@ -1299,6 +1453,26 @@ async def chat( config: SessionConfig ) -> None:
 # Compaction settings from CLI flags
 # ==============================================================================
 def resolve_compaction_settings( args: argparse.Namespace ) -> CompactionSettings:
+    """Create compaction settings from CLI flags."""
+    
+    try:
+        trigger = CompactionTrigger( args.compaction )
+    except ValueError:
+        choices = ", ".join( [ t.value for t in CompactionTrigger ] )
+        raise SystemExit( f"Invalid compaction trigger {args.compaction!r}; choose one of: {choices}" )
+    
+    try:
+        return CompactionSettings(
+            trigger = trigger,
+            compaction_interval = args.compaction_interval,
+            overlap_size = args.overlap_size,
+            token_threshold = args.token_threshold,
+            event_retention_size = args.event_retention_size,
+            summarizer_model = args.summarizer_model,
+            summarize_prompt = args.summarizer_prompt
+        )
+    except ValueError as exc:
+        raise SystemExit( f"Invalid compaction configuration: {exc}" )
     
 # ==============================================================================
 # Preflight (environment + credentials)
@@ -1504,6 +1678,8 @@ def main() -> None:
         session_id = args.session_id
     )
     
+    compaction_settings = resolve_compaction_settings( args )
+    
     # --audit: synchronous, read-only report
     if args.audit:
         print_audit_report( config )
@@ -1517,7 +1693,7 @@ def main() -> None:
         asyncio.run( list_tools() )
         return
     
-    asyncio.run( chat( config ) )
+    asyncio.run( chat( config, compaction_settings ) )
     
 if __name__ == "__main__":
     main()
