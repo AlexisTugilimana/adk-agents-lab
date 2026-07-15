@@ -70,9 +70,6 @@ Backends (--memory):
 
     off     -> (default) No memory service
     memory  -> InMemoryMemoryService: keyword search, RAM only, gone on exit.
-    sqlite  -> SQLiteMemoryService (custom BaseMemoryService) with FTS5 full-text 
-               search with BM25 ranking. Persists across sessions. Still lexical 
-               with no embedding and consolidation strategies.
                
 Retrieval (--memory-retrieval):
 
@@ -92,17 +89,6 @@ How to use memory with agent (ex):
     # In-memory long-term memory, reactive recall, save at end
     uv run course/day-3/chat3b-with-memory.py --memory memory --memory-retrieval load 
                                               --memory-save end
-
-    # Persistent long-term memory, proactive call, save every turn
-    uv run course/day-3/chat3b-with-memory.py --memory sqlite --memory-retrieval preload 
-                                              --memory-save every-turn
-                                              
-    # Query the memory 
-    uv run course/day-3/chat3b-with-memory.py --memory-search "favorite color"
-                                              --memory sqlite
-    
-    TODO: should add the audit of the memory as for the session
-    
 MCP
 ---
 Servers are described declaratively in the SERVERS registry. Earch server pairs 
@@ -176,7 +162,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Union, Callable, Awaitable, Iterator
+from typing import AsyncIterator, Union, Callable, Awaitable, Iterator, Optional
 
 # ==============================================================================
 # Route warnings into logging
@@ -208,6 +194,8 @@ from google.adk.apps.app import App, ResumabilityConfig, EventsCompactionConfig
 from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.models import Gemini
+from google.adk.agents.llm_agent import ToolUnion
+from google.adk.agents.callback_context import CallbackContext
 from google.genai import types
 
 # ==============================================================================
@@ -309,6 +297,9 @@ Approver = Callable[ [ ApprovalRequest ], Awaitable[ bool ] ]
 
 # Before callback signature
 BeforeToolCallback = Callable[ [ BaseTool, dict, ToolContext ], dict | None ]
+
+# After agent callback signature
+AfterAgentCallback = Callable[ [ CallbackContext ], Awaitable[ None ] ]
 
 # ==============================================================================
 # Logger
@@ -1454,7 +1445,6 @@ class MemoryConfig:
     retrieval: MemoryRetrieval = MemoryRetrieval.NONE
     save_trigger: MemorySaveTrigger = MemorySaveTrigger.END_OF_CONVERSATION
     save_interval_seconds: float = DEFAULT_MEMORY_INTERVAL
-    db_path: str = DEFAULT_MEMORY_DB_PATH
     
     @property
     def enabled( self ) -> bool:
@@ -1510,39 +1500,121 @@ def build_memory_tools( config: MemoryConfig ) -> list[ BaseTool ]:
         return [ preload_memory ]
     return [ load_memory ]
     
-# ==============================================================================
-# Cmd: memory-search (inspect stored memory)
-# ==============================================================================
-async def memory_search_command( app_name: str, user_id: str, memory_config: MemoryConfig, query: str ) -> None:
-    """Run a full-text search against the memory store and print the hits, then exit."""
+@dataclass
+class MemorySaver:
+    """Own the logic for ingesting the data to memory."""
     
-    if not memory_config.enabled:
-        raise SystemExit(
-            "--memory-search needs a memory backend."
-            "Re-run with: --memory sqlite --memory-search <query>"
-        )
-    if memory_config.backend is MemoryBackend.MEMORY:
-        raise SystemExit(
-            "Use --memory sqlite to inspect a memory store."
-        )
-    if not Path( memory_config.db_path ).exists():
-        raise SystemExit(
-            f"No memory database at {memory_config.db_path} yet."
-            f"Run a chat with --memory sqlite first to create it."
-        )
+    config: MemoryConfig
+    memory_service: BaseMemoryService | None
+    session_service: BaseSessionService
+    app_name: str
+    user_id: str
+    session_id: str
     
+    @property
+    def active( self ) -> bool:
+        return self.config.enabled
+    
+    @property
+    def after_agent_callback( self ) -> Optional[ AfterAgentCallback ]:
+        """Callback run after each run (EVERY_TURN), else None."""
         
+        if not self.active or self.config.save_trigger is not MemorySaveTrigger.EVERY_TURN:
+            return None
+        
+        async def _save( callback_context: CallbackContext ) -> None:
+            await callback_context.add_session_to_memory()
+            log.info( "memory.save trigger=every-turn" )
+            return None
+        
+        return _save
+    
+    async def _save_current_session( self, reason: str ) -> None:
+        """Fetch the current session and save it to memory."""
+        
+        if not self.active or not self.memory_service:
+            return
+        try:
+            session = await self.session_service.get_session(
+                app_name = self.app_name,
+                user_id = self.user_id,
+                session_id = self.session_id
+            )
+            if session is None:
+                return
+            await self.memory_service.add_session_to_memory( session )
+            log.info( f"memory.save trigger={reason}" )
+        except Exception:
+            log.exception( f"memory.save.error trigger={reason}" )
+            
+    async def _internal_loop( self ) -> None:
+        """Background task: ingest the session to memory every N seconds before it is cancelled."""
+        
+        interval = self.config.save_interval_seconds
+        
+        while True:
+            await asyncio.sleep( interval )
+            await self._save_current_session( "interval" )
+                
+    @asynccontextmanager
+    async def life_cycle( self ) -> AsyncIterator[ None ]:
+        """Context manager for handling the memory ingestion timing.
+        
+        Prepare the background ingestion process (saver) and the final save on exit.
+        """
+        
+        task: asyncio.Task | None = None
+        if self.active and self.memory_service is not None and self.config.save_trigger is MemorySaveTrigger.INTERVAL:
+            task = asyncio.create_task( self._internal_loop() )
+            log.info( f"memory.save.interval.start every={self.config.save_interval_seconds:g}s" )
+        
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.exception( "memory.saver.interval.teardown_error" )
+            if self.active and self.config.save_trigger is not MemorySaveTrigger.EVERY_TURN:
+                await self._save_current_session( "final" )
+                
 # ==============================================================================
 # Agent + Resumable app
 # ==============================================================================
-def build_agent( toolsets: list[ McpToolset ], before_tool_callback: BeforeToolCallback | None = None ) -> Agent:
+def build_agent(
+    toolsets: list[ McpToolset ], 
+    before_tool_callback: BeforeToolCallback | None = None,
+    memory_tools: list[ BaseTool ] | None = None,
+    after_agent_callback: Callable | None = None,
+    instruction: str = INSTRUCTIONS
+) -> Agent:
+    tools: list[ ToolUnion ] = [ *toolsets, *( memory_tools or [] ) ]
     return Agent(
         name = AGENT_NAME,
         model = MODEL,
-        instruction = INSTRUCTIONS,
-        tools = list( toolsets ),
-        before_tool_callback = before_tool_callback
+        instruction = instruction,
+        tools = tools,
+        before_tool_callback = before_tool_callback,
+        after_agent_callback = after_agent_callback
     )
+
+def compose_instruction( memory_config: MemoryConfig ) -> str:
+    """Append the recall hint when the memory retrieval is reactive.
+    
+    `preload_memory` needs no hint as ADK injects it itself.
+    """
+    
+    if memory_config.enabled and memory_config.retrieval is MemoryRetrieval.LOAD:
+        return (
+            INSTRUCTIONS
+            + " You also have a load_memory tool: call it to recall facts the user "
+            "shared in earlier conversations before saying you don't know."
+        )
+    return INSTRUCTIONS
 
 def build_app( agent: Agent, compaction: EventsCompactionConfig | None = None ) -> App:
     """Wrap the agent in resumable app."""
@@ -1599,17 +1671,32 @@ async def chat(
         compaction_config = build_events_compaction_config( compaction_settings )
         print( f"[compaction] {compaction_settings.describe()}" )
         
-        # Long-term memory: (1) initialize, (2) set up the saver which decides 
-        # the timing for saving the memory, (3) pick a retriever.
+        # Long-term memory
         memory_service, memory_label = build_memory_service( memory_config )
         memory_tools = build_memory_tools( memory_config )
         print( f"[memory] {memory_config.describe()}" )
         log.info( f"memory.backend={memory_config.backend.value} {memory_label}" )
         
-        agent = build_agent( toolsets, before_tool_callback )
+        saver = MemorySaver(
+            config = memory_config,
+            memory_service = memory_service,
+            session_service = session_service,
+            app_name = config.app_name,
+            user_id = config.user_id,
+            session_id = config.session_id
+        )
+        
+        agent = build_agent(
+            toolsets = toolsets, 
+            before_tool_callback = before_tool_callback,
+            memory_tools = memory_tools,
+            after_agent_callback = saver.after_agent_callback,
+            instruction = compose_instruction( memory_config )
+        )
+        
         app = build_app( agent, compaction_config )
         
-        runner = Runner( app = app, session_service = session_service )
+        runner = Runner( app = app, session_service = session_service, memory_service = memory_service )
         log.info( f"Startup app={APP_NAME} agent={agent.name} model={MODEL}" )
         
         user_id, session_id = config.user_id, config.session_id
@@ -1624,7 +1711,10 @@ async def chat(
         print( f"[session] {state} {session_id!r} (user={user_id}, prior_events={replayed})" )
         log.info( f"session.ready state={state} user={user_id} session={session_id} prior_events={replayed})" )
         
-        await chat_loop( runner, user_id = user_id, session_id = session_id, approver = terminal_approver )
+        async with saver.life_cycle():
+            await chat_loop(
+                runner, user_id = user_id, session_id = session_id, approver = terminal_approver
+            )
 
 # ==============================================================================
 # Compaction settings from CLI flags
@@ -1654,16 +1744,15 @@ def resolve_compaction_settings( args: argparse.Namespace ) -> CompactionSetting
 # ==============================================================================
 # Memory config from CLI flags
 # ==============================================================================
-def resolveMemoryConfig( args: argparse.Namespace ) -> MemoryConfig:
+def resolve_memory_config( args: argparse.Namespace ) -> MemoryConfig:
     """Create the long-term memory configuration from CLI flags."""
     
     try:
         return MemoryConfig(
-            backend = MemoryBackend( args.backend ),
+            backend = MemoryBackend( args.memory ),
             retrieval = MemoryRetrieval( args.memory_retrieval ),
             save_trigger = MemorySaveTrigger( args.memory_save ),
-            save_interval_seconds = args.memory_interval,
-            db_path = args.memory_db_path
+            save_interval_seconds = args.memory_interval
         )
     except ValueError as exc:
         raise SystemExit( f"Invalid memory configuration: {exc}" )
@@ -1862,7 +1951,7 @@ def main() -> None:
     
     # --- Long-term memory flags ---
     memory_group = parser.add_argument_group( "long-term memory" )
-    memory_group = parser.add_argument(
+    memory_group.add_argument(
         "--memory",
         choices = [ m.value for m in MemoryBackend ],
         default = DEFAULT_MEMORY_BACKEND,
@@ -1871,7 +1960,7 @@ def main() -> None:
             " 'off' (default) or 'memory' (keyword search, RAM only)."
         )
     )
-    memory_group = parser.add_argument(
+    memory_group.add_argument(
         "--memory-retrieval",
         choices = [ m.value for m in MemoryRetrieval ],
         default = DEFAULT_MEMORY_RETRIEVAL,
@@ -1881,7 +1970,7 @@ def main() -> None:
             "preload_memory tool, searches every turn)."
         )
     )
-    memory_group = parser.add_argument(
+    memory_group.add_argument(
         "--memory-save",
         choices = [ m.value for m in MemorySaveTrigger ],
         default = DEFAULT_MEMORY_SAVE,
@@ -1891,7 +1980,7 @@ def main() -> None:
             "'interval' (background job every --memory-interval seconds)."
         )
     )
-    memory_group = parser.add_argument(
+    memory_group.add_argument(
         "--memory-interval",
         type = float,
         default = DEFAULT_MEMORY_INTERVAL,
@@ -1911,7 +2000,7 @@ def main() -> None:
     )
     
     compaction_settings = resolve_compaction_settings( args )
-    memory_config = resolveMemoryConfig( args )
+    memory_config = resolve_memory_config( args )
     
     # --audit: synchronous, read-only report
     if args.audit:
