@@ -454,7 +454,7 @@ SERVERS: list[ MCPServerSpec ] = [
         ),
         tool_filter = [ "echo", "get-sum", "get-tiny-image", "get-env" ],
         timeout = 30.0,
-        bypass_confirmation = frozenset( { "echo", "get-sum", "get-env"} )
+        bypass_confirmation = frozenset( { "echo", "get-env"} )
     ),
     MCPServerSpec(
         name = "github",
@@ -865,10 +865,6 @@ async def stream_turn(
 
     Resuming requires passing the same `invocation_id` so the runner continues the 
     paused execution instead of starting a new one.
-    
-    Two separate output channels:
-        1. `yield update`:  presentation data for the user.
-        2. `log.*(...)`:    operational telemetry for observability.
     """
     
     message = types.Content( role = "user", parts = [ types.Part( text = text ) ] )
