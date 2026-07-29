@@ -1,9 +1,49 @@
+# ==============================================================================
+# Agent app - Packaging
+# ------------------------------------------------------------------------------
+# Base dependencies == deployable set ships to Agent Engine.
+# [local] extra adds MCP toolset stack + sqlite.
+# `deployment/requirements.txt` mirrors the same base set as deployment artifacts.
+#
+# Install:
+#
+#   deploy:         uv sync                             then uv run agent deploy
+#   hack locally:   uv sync --extra local --extra dev   then uv run agent smoke
+#   run tests:      uv sync --extra dev                 then uv run pytest
+# ==============================================================================
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "adk-test"
+name = "agent"
 version = "0.1.0"
-requires-python = ">=3.12"
+description = "Deployable ADK agent backend (local <-> Agent Engine)"
+requires-python = ">=3.10"
 dependencies = [
-    "aiosqlite>=0.22.1",
-    "google-adk>=2.2.0",
-    "google-genai>=2.8.0"
+    "google-adk",
+    "google-cloud-aiplatform[agent-engines]",
+    "opentelemetry-instrumentation-google-genai",
 ]
+
+# Discoverable entrypoint
+[project.scripts]
+agent = "agent.__main__:main"
+
+[project.optional-dependencies]
+local = [
+    "google-adk[mcp,db]",
+    "aiosqlite"
+]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
