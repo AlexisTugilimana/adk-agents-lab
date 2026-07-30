@@ -101,14 +101,14 @@ class ServerTelemetry( ABC ):
         """Returns a callable that `AdkApp` runs later, inside the runtime 
         to install the log formatter (locally) or the trace exporter (cloud)."""
         
-class CredentialsCheck:
+class CredentialsCheck( ABC ):
     """Profile-aware credential verification."""
     
     @abstractmethod
     def verify( self ) -> str:
         """Return a human label. Local may raise `SystemExit`; cloud never raises."""
 
-class Clock:
+class Clock( ABC ):
     """A monotonic clock, injected so `MetricsPlugin` latency is deterministic."""
     
     @abstractmethod
