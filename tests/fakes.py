@@ -1,7 +1,34 @@
 """Fakes for implementing ports for the tests."""
 
-from agent.ports import Clock
+from typing import Any
 
+from agent.ports import (
+    Clock,
+    ToolProvisioning,
+    GatingSpec
+)
+
+class FakeTools( ToolProvisioning ):
+    """Return no tools and a caller-supplied GatingSpec. Records lifecycle calls 
+    so tests can assert setup/teardown ordering."""
+    
+    def __init__( self, gating: GatingSpec | None = None ) -> None:
+        self._gating = gating or GatingSpec.empty()
+        self.setup_calls = 0
+        self.teardown_calls = 0
+        
+    async def setup( self ) -> None:
+        self.setup_calls += 1
+    
+    async def teardown( self ) -> None:
+        self.teardown_calls += 1
+    
+    def tools( self ) -> list[ Any ]:
+        return []
+
+    def gating( self ) -> GatingSpec:
+        return self._gating
+        
 class FakeClock( Clock ):
     """Deterministic `now()` function returning value."""
     
