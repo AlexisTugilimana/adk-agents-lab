@@ -9,7 +9,11 @@
 #
 #   deploy:         uv sync                             then uv run agent deploy
 #   hack locally:   uv sync --extra local --extra dev   then uv run agent smoke
-#   run tests:      uv sync --extra dev                 then uv run pytest
+#   run tests:      uv sync --extra local --extra dev   then uv run pytest
+# 
+# NOTE: the opentelemetry package is not directly listed. ADK's [otel-gcp] extra 
+# contraints them (instrumentation-google-genai >= 0.7b1, <1) and keeps them inside 
+# ADK's opentelemetry-api ceiling (<=1.42.1).
 # ==============================================================================
 [build-system]
 requires = ["setuptools>=68"]
@@ -21,9 +25,8 @@ version = "0.1.0"
 description = "Deployable ADK agent backend (local <-> Agent Engine)"
 requires-python = ">=3.10"
 dependencies = [
-    "google-adk",
+    "google-adk[otel-gcp]>=2.6.2,<3",
     "google-cloud-aiplatform[agent-engines]",
-    "opentelemetry-instrumentation-google-genai",
 ]
 
 # Discoverable entrypoint
