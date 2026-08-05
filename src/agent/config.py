@@ -155,9 +155,13 @@ class AgentConfig:
     compaction: CompactionSettings = field( default_factory = CompactionSettings )
 
     # --- Cloud identity / auth ---
-    use_vertex: bool = False    # from GOOGLE_GENAI_USE_VERTEXAI Consumed by AddCredentials
-    project: str | None = None  # from GOOGLE_CLOUD_PROJECT
-    location: str | None = None # from GOOGLE_CLOUD_LOCATION
+    use_vertex: bool = False                    # from GOOGLE_GENAI_USE_VERTEXAI Consumed by AddCredentials
+    project: str | None = None                  # from GOOGLE_CLOUD_PROJECT
+    location: str | None = None                 # from GOOGLE_CLOUD_LOCATION
+    engine_location: str | None = None          # from GOOGLE_CLOUD_ENGINE_LOCATION
+    
+    # --- Staging bucket ---
+    staging_bucket: str | None = None           # from GOOGLE_CLOUD_STAGING_BUCKET
     
     # --- MCP ---
     enable_mcp: bool = False    # Local sets TRUE, Cloud leaves FALSE
@@ -172,6 +176,8 @@ class AgentConfig:
             use_vertex = os.environ.get( "GOOGLE_GENAI_USE_VERTEXAI", "" ).lower() in thruthy,
             project = os.environ.get( "GOOGLE_CLOUD_PROJECT" ),
             location = os.environ.get( "GOOGLE_CLOUD_LOCATION" ),
+            engine_location = os.environ.get( "GOOGLE_CLOUD_ENGINE_LOCATION" ),
+            staging_bucket = os.environ.get( "GOOGLE_CLOUD_STAGING_BUCKET" ),
             session_backend = SessionBackend(
                 os.environ.get( "AGENT_SESSION_BACKEND", SessionBackend.MEMORY.value )
             ),

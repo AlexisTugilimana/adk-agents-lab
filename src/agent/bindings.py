@@ -68,7 +68,7 @@ class AdcCredentials( CredentialsCheck ):
             "   gcloud auth application-default login\n"
             "   export GOOGLE_GENAI_USE_VERTEXAI=TRUE\n"
             "   export GOOGLE_CLOUD_PROJECT=your-project-id\n"
-            "   export GOOGLE_CLOUD_LOCATION=your-location\n"
+            "   export GOOGLE_CLOUD_MODEL_LOCATION=your-location\n"
         )
         if not cfg.use_vertex:
             raise SystemExit( f"No credentials found. Set up ADC: \n {_SETUP_INT}" )

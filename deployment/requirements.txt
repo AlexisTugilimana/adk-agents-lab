@@ -1,0 +1,10 @@
+# ==============================================================================
+# deployment/requirements.txt
+# ------------------------------------------------------------------------------
+# What is deployed in the container for the agent. Mirrors pyproject's base 
+# dependencies.
+# No MCP, no sqlalchemy: those are [local] extra, never imported on cloud path, 
+# so Agent Engine cannot package them.
+# ==============================================================================
+google-adk[otel-gcp]>=2.6.2,<3
+google-cloud-aiplatform[agent-engines]
