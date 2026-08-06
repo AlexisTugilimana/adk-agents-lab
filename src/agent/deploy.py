@@ -4,12 +4,13 @@ Run locally: builds the cloud-profile `AdkApp` and assembles, then read the
 `deployment/requirements.txt`, packages the `src/agent`, and calls 
 `agent_engine.create(...)`.
 
-Must be run from the repo root as `extra_packages=["src/agent"]` resolves relative 
+Must be run from the repo root as `extra_packages=["/agent"]` resolves relative 
 to the cwd. 
 
 Requires ADC plus GOOGLE_CLOUD_PROJECT/GOOGLE_PROJECT_LOCATION/GOOGLE_CLOUD_STAGING_BUCKET. 
 Returns the Agent Engine resource name.
 """
+import os
 import logging
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from agent.config import AgentConfig
 
 log = logging.getLogger( "agent.deploy" )
 
+_SRC_DIR = Path( __file__ ).resolve().parents[ 1 ]  # .../src (deploy.py is in src/agent/)
+_PACKAGE_NAME = "agent" # Must be importable in the container
 _DEPLOYMENT_DIR = Path( __file__ ).resolve().parents[ 2 ] / "deployment"
 _REQUIREMENTS = _DEPLOYMENT_DIR / "requirements.txt"
 
@@ -71,13 +74,22 @@ def deploy( cfg: AgentConfig ) -> str:
         bindings.telemetry.enabled_tracing
     ).lower()
     
-    engine = agent_engines.create(
-        agent_engine = adk_app,
-        requirements = requirements,
-        extra_packages = [ "src/agent" ],
-        env_vars = dict( env_vars ),
-        display_name = cfg.app_name
-    )
+    # The SDK tars extra_packages and the container only puts the the extraction 
+    # root on sys.path. So `agent/` must be the tar root/. Using `src/agent` from 
+    # the repo yields to `src/agent` and `import agent` fails. Hence tar from inside 
+    # src/
+    prev_cwd = Path.cwd()
+    os.chdir( _SRC_DIR )
+    try:
+        engine = agent_engines.create(
+            agent_engine = adk_app,
+            requirements = requirements,
+            extra_packages = [ _PACKAGE_NAME ],
+            env_vars = dict( env_vars ),
+            display_name = cfg.app_name
+        )
+    finally:
+        os.chdir( prev_cwd )
     
     resource_name = getattr( engine, "resource_name", str( engine ) )
     log.info( f"deploy.created resource_name={resource_name}" )

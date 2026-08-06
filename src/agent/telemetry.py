@@ -24,8 +24,6 @@ from typing import Any, Callable
 
 from agent.ports import ServerTelemetry
 
-from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
-
 LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)s | %(message)s"
 DATE_FORMAT = "%H:%M:%S"
 
@@ -113,6 +111,7 @@ class CloudServerTelemetry( ServerTelemetry ):
             
             try:
                 # 2. Cloud Trace instrumentation
+                from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
                 GoogleGenAiSdkInstrumentor().instrument()
                 logging.getLogger( "agent.telemetry" ).info(
                     f"telemetry.cloud instrumented project={self._project} location={self._location}"

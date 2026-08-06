@@ -9,7 +9,6 @@ import logging
 
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.sessions.database_session_service import DatabaseSessionService
 from agent.config import SessionBackend
 from agent.ports import SessionProvisioning, SessionServiceBuilder
 
@@ -37,6 +36,8 @@ def sqlite_session_builder( db_url: str ) -> SessionServiceBuilder:
     url = normalize_sqlite_url( db_url )
     
     def _build() -> BaseSessionService:
+        from google.adk.sessions.database_session_service import DatabaseSessionService
+        
         return DatabaseSessionService( db_url = url )
     return _build
 
