@@ -70,6 +70,10 @@ class SessionProvisioning( ABC ):
     @abstractmethod
     def builder( self ) -> SessionServiceBuilder | None:
         """Locally: a zero-arg builder. Cloud: None because owns the session."""
+        
+    @abstractmethod
+    async def teardown( self ) -> None:
+        """Release anything `builder()` caused to be created."""
 
 class MemoryProvisioning( ABC ):
     """Long-term memory. Deferred for now."""

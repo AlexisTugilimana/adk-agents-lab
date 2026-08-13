@@ -134,7 +134,8 @@ SERVERS: list[ McpServerSpec ] = [
     McpServerSpec(
         name = "everything",
         transport = StdioTransport(
-            command = "npx", args = [ "y", "@modelcontextprotocol/server-everything" ]
+            command = "npx",
+            args = [ "-y", "@modelcontextprotocol/server-everything" ]
         ),
         tool_filter = [ "echo", "get-sum", "get-env" ],
         timeout = 30.0,
@@ -276,7 +277,7 @@ class McpToolProvider( ToolProvisioning ):
         """Preflight first so missing runtime is clean and early skip."""
         
         self._available = select_available_servers( self._specs )
-        self._toolsets = build_toolsets( self._specs )
+        self._toolsets = build_toolsets( self._available )
         self._discovered = await discover_tools( self._toolsets )
     
     async def teardown(self) -> None:

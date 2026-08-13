@@ -4,7 +4,7 @@ import logging
 import os
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
-from typing import Any, Iterator
+from typing import Any, Generator
 
 import pytest
 
@@ -96,9 +96,10 @@ def deployed_agent() -> Any:
 # ==============================================================================
 # Log capture
 # ==============================================================================
+@contextmanager
 def capture_logs(
     logger_name: str, level: int = logging.INFO
-) -> Iterator[ list[ logging.LogRecord ] ]:
+) -> Generator[ list[ logging.LogRecord ], None, None ]:
     """Collect records emitted by `logger_name` for the duration of the block."""
     
     logger = logging.getLogger( logger_name )

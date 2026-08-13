@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from tests.integration.events import Event, calls_named
-from tests.integration.hitl import GATED_TOOL, confirmation_request
+from tests.integration.hitl import GATED_TOOL, confirmation_requests
 
 # ==============================================================================
 # Guards
@@ -30,7 +30,7 @@ def require_tool_call( events: list[ Event ], tool: str = GATED_TOOL ) -> None:
 def require_confirmation( events: list[ Event ] ) -> list[ dict[ str, Any ] ]:
     """Return the confirmation requests or apply failure policy."""
     
-    requests = confirmation_request( events )
+    requests = confirmation_requests( events )
     if not requests:
         pytest.fail( 
             "no confirmation request emitted - the gate did not park the turn"

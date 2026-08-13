@@ -8,7 +8,7 @@ CONFIRMATION_NAME = "adk_request_confirmation"
 # Natively-provided demo tool the policy gates under both local and cloud.
 GATED_TOOL = "sensitive_echo"
 
-def confirmation_request( events: Iterable[ Event ] ) -> list[ dict[ str, Any ] ]:
+def confirmation_requests( events: Iterable[ Event ] ) -> list[ dict[ str, Any ] ]:
     """Every pending confirmation in the stream, normalized for the approver.
     
     Returns one entry per gated call:

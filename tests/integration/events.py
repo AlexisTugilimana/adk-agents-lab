@@ -78,7 +78,7 @@ def executed_responses( events: list[ Event ], tool: str ) -> list[ dict[ str, A
 def has_text( events: Iterable[ Event ] ) -> bool:
     """Whether any model text came back. Presence only."""
     
-    return any( part.get( "text " ) for e in events for part in parts( e ) )
+    return any( part.get( "text" ) for e in events for part in parts( e ) )
 
 def event_shape( events: Iterable[ Event ] ) -> list[ str ]:
     """Reduce a stream into a comparable sequences of structural labels."""

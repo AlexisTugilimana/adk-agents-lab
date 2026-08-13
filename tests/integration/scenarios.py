@@ -8,7 +8,13 @@ verify - park, approve, reject, batch, session binding - is identical.
 
 from typing import Any
 
-from tests.integration.driver import GATED_PROMPT, TWO_GATED_PROMPT, drain, new_session
+from tests.integration.driver import (
+    GATED_PROMPT, 
+    drain, 
+    new_session,
+    session_scope,
+    SessionScope
+)
 from tests.integration.events import (
     Event,
     calls_named,
@@ -17,11 +23,10 @@ from tests.integration.events import (
     pending_responses,
     responses_named
 )
-from tests.integration.guards import require_batch, require_confirmation, require_tool_call
+from tests.integration.guards import require_confirmation, require_tool_call
 from tests.integration.hitl import (
     CONFIRMATION_NAME,
     GATED_TOOL,
-    build_approvals,
     build_approval
 )
 
@@ -31,6 +36,7 @@ TOOL_CALL_ATTEMPTS = 3
 async def _park(
     app: Any, 
     prompt: str, 
+    scope: SessionScope,
     *, 
     attempts: int = TOOL_CALL_ATTEMPTS
 ) -> tuple[ str, list, list ]:
@@ -43,9 +49,9 @@ async def _park(
     events: list[ Event ] = []
     session_id = ""
     for _ in range( 1, attempts + 1 ):
-        session_id = await new_session( app )
+        session_id = await scope.create()
         events = await drain( app, prompt, session_id = session_id )
-        if calls_named( events, GATED_PROMPT ):
+        if calls_named( events, GATED_TOOL ):
             break
         
     # Fail here if `GATED_PROMPT` never called in the attempts
@@ -58,26 +64,27 @@ async def _park(
 async def verify_turn_parks( app: Any ) -> None:
     """call -> pending -> confirmation request, with the tool never running."""
     
-    _, events, requests = await _park( app, GATED_PROMPT )
-    
-    # The plugin answer `pending` instead of the tool output
-    assert pending_responses( events, GATED_TOOL ), "expected a pending response for the gated tool"
-    assert not executed_responses( events, GATED_TOOL ), (
-        "gated tool produced a real response - it may have executed: "
-        f"{responses_named( events, GATED_TOOL )!r}"
-    )
-    
-    # ADK converted it into a long-running confirmation call whose id is advertised.
-    assert any( r[ "advertised" ] for r in requests ), (
-        f"a {CONFIRMATION_NAME} is must appear in long_running_tool_ids; "
-        f"saw ids={long_running_ids( events )!r}"
-    )
-    
-    # The payload must carry enough information for a human to decide - assert the 
-    # keys
-    first = requests[ 0 ]
-    assert first[ "original_call" ], "confirmation must reference the original function call"
-    assert first[ "tool_confirmation" ].get( "confirmed" ) is False
+    async with session_scope( app ) as scope:
+        _, events, requests = await _park( app, GATED_PROMPT, scope )
+        
+        # The plugin answer `pending` instead of the tool output
+        assert pending_responses( events, GATED_TOOL ), "expected a pending response for the gated tool"
+        assert not executed_responses( events, GATED_TOOL ), (
+            "gated tool produced a real response - it may have executed: "
+            f"{responses_named( events, GATED_TOOL )!r}"
+        )
+        
+        # ADK converted it into a long-running confirmation call whose id is advertised.
+        assert any( r[ "advertised" ] for r in requests ), (
+            f"a {CONFIRMATION_NAME} is must appear in long_running_tool_ids; "
+            f"saw ids={long_running_ids( events )!r}"
+        )
+        
+        # The payload must carry enough information for a human to decide - assert the 
+        # keys
+        first = requests[ 0 ]
+        assert first[ "original_call" ], "confirmation must reference the original function call"
+        assert first[ "tool_confirmation" ].get( "confirmed" ) is False
 
 # ==============================================================================
 # Resume
@@ -85,13 +92,14 @@ async def verify_turn_parks( app: Any ) -> None:
 async def verify_approval_executes( app: Any ) -> None:
     """`confirmed: true` in the same session -> the tool finally runs."""
     
-    session_id, _, requests = await _park( app, GATED_PROMPT )
-    
-    resumed = await drain(
-        app,
-        build_approval( requests[ 0 ][ "id" ], confirmed = True ),
-        session_id = session_id
-    )
+    async with session_scope( app ) as scope:
+        session_id, _, requests = await _park( app, GATED_PROMPT, scope )
+        
+        resumed = await drain(
+            app,
+            build_approval( requests[ 0 ][ "id" ], confirmed = True ),
+            session_id = session_id
+        )
     
     assert executed_responses( resumed, GATED_TOOL ), (
         "after approval the gated tool should have executed; "
@@ -101,13 +109,14 @@ async def verify_approval_executes( app: Any ) -> None:
 async def verify_rejection_does_not_executes( app: Any ) -> None:
     """`confirmed: false` must not run the tool."""
     
-    session_id, _, requests = await _park( app, GATED_PROMPT )
-        
-    resumed = await drain(
-        app,
-        build_approval( requests[ 0 ][ "id" ], confirmed = False ),
-        session_id = session_id
-    )
+    async with session_scope( app ) as scope:
+        session_id, _, requests = await _park( app, GATED_PROMPT, scope )
+            
+        resumed = await drain(
+            app,
+            build_approval( requests[ 0 ][ "id" ], confirmed = False ),
+            session_id = session_id
+        )
     
     for fr in responses_named( resumed, GATED_TOOL ):
         payload = fr.get( "response" ) or {}
@@ -153,18 +162,16 @@ async def verify_approval_is_bound_to_its_session( app: Any ) -> None:
     tool.
     """
     
-    parked_session_id = await new_session( app )
-    parked = await drain( app, GATED_PROMPT, session_id = parked_session_id )
-    require_tool_call( parked )
-    requests = require_confirmation( parked )
-    
-    other_session_id = await new_session( app )
-    await _assert_resume_is_refused(
-        app,
-        build_approval( requests[ 0 ][ "id" ], confirmed = True ),
-        other_session_id,
-        "approval replayed into another session"
-    )
+    async with session_scope( app ) as scope:
+        _, _, requests = await _park( app, GATED_PROMPT, scope )
+        
+        other_session_id = await scope.create()
+        await _assert_resume_is_refused(
+            app,
+            build_approval( requests[ 0 ][ "id" ], confirmed = True ),
+            other_session_id,
+            "approval replayed into another session"
+        )
 
 async def verify_unknown_confirmation_id_does_nothing( app: Any ) -> None:
     """A fabricated confirmation id must resolve nothing.
@@ -173,15 +180,12 @@ async def verify_unknown_confirmation_id_does_nothing( app: Any ) -> None:
     so an id that was never issued has no target and must never execute.
     """
     
-    session_id = await new_session( app )
-    parked = await drain( app, GATED_PROMPT, session_id = session_id )
-    require_tool_call( parked )
-    requests = require_confirmation( parked )
-    
-    other_session_id = await new_session( app )
-    await _assert_resume_is_refused(
-        app,
-        build_approval( "adk-nonexistence-000", confirmed = True ),
-        other_session_id,
-        "fabricated confirmation id"
-    )
+    async with session_scope( app ) as scope:
+        session_id, _, _ = await _park( app, GATED_PROMPT, scope )
+        
+        await _assert_resume_is_refused(
+            app,
+            build_approval( "adk-nonexistence-000", confirmed = True ),
+            session_id,
+            "fabricated confirmation id"
+        )

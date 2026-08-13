@@ -6,6 +6,7 @@ manages itself the sessions.
 """
 
 import logging
+from typing import Callable
 
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -30,7 +31,10 @@ def in_memory_session_builder() -> SessionServiceBuilder:
         return InMemorySessionService()
     return _build
 
-def sqlite_session_builder( db_url: str ) -> SessionServiceBuilder:
+def sqlite_session_builder(
+    db_url: str,
+    on_created: Callable[ [ BaseSessionService ], None ] | None = None
+) -> SessionServiceBuilder:
     """Zero-arg builder for a persitent sqlite session service."""
     
     url = normalize_sqlite_url( db_url )
@@ -38,7 +42,11 @@ def sqlite_session_builder( db_url: str ) -> SessionServiceBuilder:
     def _build() -> BaseSessionService:
         from google.adk.sessions.database_session_service import DatabaseSessionService
         
-        return DatabaseSessionService( db_url = url )
+        service = DatabaseSessionService( db_url = url )
+        if on_created is not None:
+            on_created( service )
+        return service
+    
     return _build
 
 class LocalSessions( SessionProvisioning ):
@@ -47,11 +55,32 @@ class LocalSessions( SessionProvisioning ):
     def __init__( self, backend: SessionBackend, db_url: str ) -> None:
         self._backend = backend
         self._db_url = db_url
+        self._created: list[ BaseSessionService ] = []
     
     def builder( self ) -> SessionServiceBuilder:
         if self._backend is SessionBackend.SQLITE:
-            return sqlite_session_builder( self._db_url )
+            return sqlite_session_builder( self._db_url, on_created = self._created.append )
         return in_memory_session_builder()
+    
+    async def teardown( self ) -> None:
+        """Dispose every session service this adapter's builder created.
+        
+        For sqlite this reaches `DatabaseSessionService.close()`, which calls 
+        `db_engine.dispose()` and clooses the connection.
+        
+        Use `get_attr()` to get the close function in case the session service 
+        does not expose the `close()` in its contract, or does not implement it.
+        """
+        
+        pending, self._created = self._created, []
+        for service in reversed( pending ):
+            close = getattr( service, "close", None )
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception:
+                log.exception( f"session.teardown.error service={type(service).__name__}" )
 
 class ManagedSessions( SessionProvisioning ):
     """Cloud session provisioning: since cloud owns the sessions when 
@@ -59,4 +88,7 @@ class ManagedSessions( SessionProvisioning ):
     
     def builder( self ):
         return None
-        
+    
+    async def teardown( self ) -> None:
+        """Nothing to release on the cloud."""
+        return None

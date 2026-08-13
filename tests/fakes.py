@@ -39,10 +39,14 @@ class FakeSessions( SessionProvisioning ):
     
     def __init__( self, builder: SessionServiceBuilder | None ) -> None:
         self._builder = builder
-    
+        self._teardown_calls = 0
+        
     def builder( self ) -> SessionServiceBuilder | None:
         return self._builder
 
+    async def teardown( self ) -> None:
+        self._teardown_calls += 1
+        
 class FakeMemory( MemoryProvisioning ):
     """Return a memory builder (set to None for now)"""
     

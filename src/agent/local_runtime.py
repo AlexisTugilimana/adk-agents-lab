@@ -43,7 +43,10 @@ async def local_adk_app( cfg: AgentConfig ) -> AsyncGenerator[ AdkApp ]:
     try:
         yield assemble_adk_app( cfg, bindings, adk_app_factory = AdkApp )
     finally:
-        await bindings.tools.teardown()
+        try:
+            await bindings.tools.teardown()
+        finally:
+            await bindings.sessions.teardown()
     
 async def run_smoke( cfg: AgentConfig, prompt: str = _DEFAULT_SMOKE_PROMPT ) -> None:
     """Run one turn in-process and print the streamed events."""

@@ -1,7 +1,9 @@
 """Driving a turn - prompts, one-turn execution, session creation."""
 
 import asyncio
-from typing import Any
+from typing import Any, AsyncGenerator
+import warnings
+from contextlib import asynccontextmanager
 
 from tests.integration.events import Event
 from tests.integration.hitl import GATED_TOOL
@@ -55,3 +57,55 @@ async def new_session( app: Any, user_id: str = USER_ID ) -> str:
     
     session = await app.async_create_session( user_id = user_id )
     return session[ "id" ] if isinstance( session, dict ) else session.id
+
+# ==============================================================================
+# Session lifecycle
+# ==============================================================================
+async def delete_session( app: Any, session_id: str, *, user_id: str = USER_ID ) -> None:
+    """Delete one session.
+    
+    Warns rather than raises as not part of the integration test.
+    """
+    
+    try:
+        await app.async_delete_session( user_id = user_id, session_id = session_id )
+    except Exception as exc:
+        warnings.warn(
+            f"could not delete session {session_id}: {exc}", stacklevel = 2
+        )
+
+class SessionScope:
+    """Hands out sessions and their removal.
+    
+    Store every sessions created during the test(s) and ensures cleanup based on 
+    the session_id.
+    """
+    
+    def __init__( self, app: Any, user_id: str = USER_ID ) -> None:
+        self._app = app
+        self._user_id = user_id
+        self._created: list[ str ] = []
+    
+    async def create( self ) -> str:
+        session_id = await new_session( self._app, self._user_id )
+        self._created.append( session_id )
+        return session_id
+
+    async def cleanup( self ) -> None:
+        
+        pending, self._created = self._created, []
+        for session_id in reversed( pending ):
+            await delete_session( self._app, session_id, user_id = self._user_id )
+
+@asynccontextmanager
+async def session_scope( app: Any, user_id: str = USER_ID ) -> AsyncGenerator[ SessionScope, None ]:
+    """Yield a class `SessionScope` and delete every recorded session on exit.
+    
+    Cleanup on finally so it happens even when the test fails.
+    """
+    
+    scope = SessionScope( app, user_id )
+    try:
+        yield scope
+    finally:
+        await scope.cleanup()
