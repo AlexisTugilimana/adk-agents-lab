@@ -1,5 +1,6 @@
 """Metrics plugin test."""
 
+import pytest
 import logging
 from dataclasses import dataclass
 from typing import cast
@@ -8,6 +9,8 @@ from google.adk.agents.invocation_context import InvocationContext
 
 from agent.plugins import MetricsPlugin
 from tests.fakes import FakeClock
+
+pytestmark = [ pytest.mark.unit ]
 
 @dataclass
 class _FakeSession:

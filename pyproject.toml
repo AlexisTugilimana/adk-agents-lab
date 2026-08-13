@@ -48,6 +48,13 @@ dev = [
 where = ["src"]
 
 [tool.pytest.ini_options]
+addopts = "-m integration"
+markers = [
+    "unit: fast, free, no network or credentials",
+    "integration: calls a real model; need credentials; costs money",
+    "deployed: needs AGENT_RESOURCE_NAME pointing to a live Agent Engine resource",
+    "mcp: needs [local] extra and Node.js (npx) on PATH"
+]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]

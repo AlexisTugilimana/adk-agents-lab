@@ -22,6 +22,8 @@ from tests.integration.driver import NO_TOOL_PROMPT, drain
 
 from agent.tools.mcp import SERVERS, McpToolProvider
 
+pytestmark = [ pytest.mark.integration, pytest.mark.mcp ]
+
 def _require_node() -> None:
     if shutil.which( "npx" ) is None:
         pytest.fail(

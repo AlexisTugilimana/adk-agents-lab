@@ -7,7 +7,9 @@ Covers load-bearing decision order:
     - Ambiguous is gated
     - Properly bypassed tool is skipped
 """
+import pytest
 from typing import Any
+
 from agent.policy import (
     ConfirmationPolicy,
     GatingSpec,
@@ -15,6 +17,8 @@ from agent.policy import (
     is_destructive,
     name_tokens
 )
+
+pytestmark = [ pytest.mark.unit ]
 
 def _spec( **overrides ) -> GatingSpec:
     base: dict[ str, Any ] = dict(

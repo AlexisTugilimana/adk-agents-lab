@@ -1,7 +1,7 @@
 """Assembly wiring test."""
 
-from typing import cast
 import pytest
+from typing import cast
 
 from agent.ports import SessionServiceBuilder
 from agent.assemble import assemble_adk_app
@@ -17,6 +17,8 @@ from tests.fakes import (
     FakeTools,
     RecordAdkAppStub
 )
+
+pytestmark = [ pytest.mark.unit ]
 
 def _local_bindings( creds: FakeCredentials, telemetry: FakeTelemetry ) -> AgentBindings:
     builder = cast( SessionServiceBuilder, lambda : object() )

@@ -3,12 +3,15 @@
 import uuid
 from pathlib import Path
 import warnings
+import pytest
 
 from tests.integration.apps import USER_ID, capture_logs, local_agent, local_config
 from tests.integration.driver import GATED_PROMPT, NO_TOOL_PROMPT, drain, new_session
 from tests.integration.events import calls_named, executed_responses, has_text
 from tests.integration.guards import require_confirmation, require_tool_call
 from tests.integration.hitl import GATED_TOOL, build_approval, confirmation_requests
+
+pytestmark = [ pytest.mark.integration ]
 
 async def test_plain_turn_completes_without_gating():
     """A prompt that needs no tool must complete normally.

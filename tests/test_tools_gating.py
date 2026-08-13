@@ -1,12 +1,15 @@
 """Tool gating test. No MCP connection - pure `gating_from_discovery` and 
 the merge logic.
 """
+import pytest
 
 from agent.policy import GatingSpec, compile_policy
 from agent.tools.composite import CompositeTools
 from agent.tools.mcp import McpServerSpec, StdioTransport, gating_from_discovery
 from agent.tools.native import NativeToolProvider, sensitive_echo
 from tests.fakes import FakeTools
+
+pytestmark = [ pytest.mark.unit ]
 
 def test_native_provider_gates_its_demo_tool():
     provider = NativeToolProvider()

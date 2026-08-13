@@ -10,9 +10,12 @@ Running this test requires `AGENT_RESOURCE_NAME` enviornment variable to be defi
 and pointing towards a deployed agent to be tested. Further improvement should consists 
 in deploying a test agent temporarily.
 """
+import pytest
 
 from tests.integration import scenarios
 from tests.integration.apps import deployed_agent
+
+pytestmark = [ pytest.mark.integration, pytest.mark.deployed ]
 
 # ==============================================================================
 # The pause

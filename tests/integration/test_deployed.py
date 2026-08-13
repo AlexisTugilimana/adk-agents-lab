@@ -2,6 +2,7 @@
 
 Only test a simple interaction with a deployed agent, not the HITL loop.
 """
+import pytest
 
 from tests.integration.apps import USER_ID, deployed_agent
 from tests.integration.driver import (
@@ -13,6 +14,8 @@ from tests.integration.driver import (
 )
 from tests.integration.events import has_text
 from tests.integration.hitl import confirmation_requests
+
+pytestmark = [ pytest.mark.integration, pytest.mark.deployed ]
 
 async def test_managed_sessions_persist_history_across_turns():
     """Two turns in one session must share history."""

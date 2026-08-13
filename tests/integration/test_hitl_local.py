@@ -6,9 +6,12 @@ The flows themselves are shared by `scenario.py` so the two suites cannot drift.
 Each test builds its app explictly with `async with local_agent()`: setup on entry, 
 teardown on exit, even when assertions fail.
 """
+import pytest
 
 from tests.integration import scenarios
 from tests.integration.apps import local_agent
+
+pytestmark = [ pytest.mark.integration ]
 
 # ==============================================================================
 # The pause
